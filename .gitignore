@@ -1,6 +1,7 @@
 .ipynb_checkpoints/
-__pycache__/
+__pycache__
 strava_data_scraping.code-workspace
 strava_scrape.ipynb
 streams_html.json
 .env
+.DS_STORE

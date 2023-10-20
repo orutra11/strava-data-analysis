@@ -2,6 +2,7 @@ import pandas as pd
 import time
 import re
 import os
+from datetime import date
 from dotenv import load_dotenv
 
 import pandas as pd
@@ -9,6 +10,8 @@ from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.wait import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 from sqlalchemy import create_engine
@@ -23,6 +26,21 @@ from data_model import (
 )
 
 load_dotenv()
+
+mes_index = {
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
+}
 
 ACT_BASE_URL = "https://www.strava.com/activities/"
 SEGMENT_BASE_URL = "https://www.strava.com/segments/"
@@ -93,9 +111,31 @@ def strava_login():
         return driver
 
 
+def elapsed_str_to_seconds(_elapsed_str):
+    split_str = _elapsed_str.split(":")
+
+    if len(split_str) == 2:
+        mmss_re = "(\d+):(\d+)"
+        z = re.match(mmss_re, _elapsed_str)
+        mm, ss = z.groups()
+        return int(mm) * 60 + int(ss)
+    elif len(split_str) == 3:
+        hhmmss_re = "(\d+):(\d+):(\d+)"
+        z = re.match(hhmmss_re, _elapsed_str)
+        hh, mm, ss = z.groups()
+        return int(hh) * 3600 + int(mm) * 60 + int(ss)
+    else:
+        print("Invalid format")
+        return 0
+
+
 def get_segment_leaderboard(_driver, _segment_id, num_results=10):
     _driver.get(
         url=(SEGMENT_BASE_URL + _segment_id),
+    )
+
+    WebDriverWait(_driver, 15).until(
+        EC.presence_of_element_located((By.XPATH, '//div[@id="results"]'))
     )
 
     leaderboard = _driver.find_elements(By.XPATH, value='//div[@id="results"]')
@@ -140,18 +180,41 @@ def get_activity_details_from_segment_effort(_driver, _segment_effort):
     # overview.click()
 
     _driver.get(
-        url=(f"{ACT_BASE_URL}/{act_id}/overview"),
+        url=(f"{ACT_BASE_URL}{act_id}/overview"),
+    )
+
+    activity_name = _driver.find_element(
+        By.XPATH, '//*[contains(@class, "activity-name")]'
+    )
+
+    WebDriverWait(_driver, 15).until(
+        EC.presence_of_element_located(
+            (By.XPATH, '//div[contains(@class, "mile-splits")]')
+        )
     )
 
     table = _driver.find_elements(
         By.XPATH, value='//div[contains(@class, "mile-splits")]'
     )
+
     df_list = pd.read_html(table[0].get_attribute("innerHTML"))
     splits = df_list[0]
 
     # date XPATH: //div[@class="details-container"]//time
     activity_date = _driver.find_element(
         By.XPATH, '//div[@class="details-container"]//time'
+    )
+
+    fecha_re = "(\S+), (\d{1,2}) de (\S+) de (\d{2,4})"
+    z = re.match(fecha_re, activity_date.text)
+    # 0 Dia semana
+    # 1 Dia mes
+    # 2 Mes en letra
+    # 3 Año
+
+    split_date = z.groups()
+    activity_date_obj = date(
+        int(split_date[3]), mes_index[split_date[2].lower()], int(split_date[1])
     )
 
     # athlete XPATH: //section[@id="heading"]//header//a[contains(@href,"athletes")]
@@ -181,6 +244,7 @@ def get_activity_details_from_segment_effort(_driver, _segment_effort):
         '//section[@id="heading"]//div[contains(@class,"activity-stats")]//li[2]',
     )
     elapsed_text = elapsed.text.split("\n")[0]
+    elapsed_seconds = elapsed_str_to_seconds(elapsed_text)
 
     # pace XPATH: //section[@id="heading"]//div[contains(@class,"activity-stats")]//li[3]
     pace = _driver.find_element(
@@ -195,19 +259,33 @@ def get_activity_details_from_segment_effort(_driver, _segment_effort):
     pace_seconds = int(minutes) * 60 + int(seconds)
 
     activity_details = {
-        "athlete_name": athlete.text,
         "athlete_id": ath_id,
-        "activity_date": activity_date.text,
-        "distance": activity_distance,
+        "athlete_name": athlete.text,
+        "activity_id": act_id,
+        "activity_name": activity_name.text,
+        "activity_date": activity_date_obj,
+        "activity_distance": activity_distance,
+        "elapsed_seconds": elapsed_seconds,
         "elapsed_time": elapsed_text,
-        "pace": pace_seconds,
-        "pace_unit": pace_units,
+        "pace_str": pace_str,
+        "pace_seconds": pace_seconds,
+        "pace_units": pace_units,
     }
 
     return _driver, activity_details, splits
 
 
 def get_event_performances(_base_segment, _event_distance, _event_name):
+    with Session(alchemy_engine) as s:
+        query_all_athletes = s.query(Athlete.id)
+        all_athletes = query_all_athletes.all()
+
+        query_all_activities = s.query(Activity.id)
+        all_activities = query_all_activities.all()
+
+    athletes_list = [ath[0] for ath in all_athletes]
+    activities_list = [act[0] for act in all_activities]
+
     driver = strava_login()
 
     driver, leaderboard = get_segment_leaderboard(driver, _base_segment)
@@ -220,6 +298,43 @@ def get_event_performances(_base_segment, _event_distance, _event_name):
             driver, leaderboard.loc[_idx, "link"]
         )
 
+        if activity_details["athlete_id"] not in athletes_list:
+            this_athlete = Athlete(
+                id=activity_details["athlete_id"], name=activity_details["athlete_name"]
+            )
+
+        if activity_details["activity_id"] not in activities_list:
+            this_activity = Activity(
+                id=activity_details["activity_id"],
+                athlete_id=activity_details["athlete_id"],
+                name=activity_details["activity_name"],
+                search_for=_event_name,
+                valid=True
+                if (
+                    abs(activity_details["activity_distance"] - _event_distance)
+                    / _event_distance
+                    < 0.05
+                )
+                else False,
+                date=activity_details["activity_date"],
+                distance=activity_details["activity_distance"],
+                elapsed_str=activity_details["elapsed_time"],
+                elapsed_seconds=activity_details["elapsed_seconds"],
+                pace_str=activity_details["pace_str"],
+                pace_seconds=activity_details["pace_seconds"],
+                pace_units=activity_details["pace_units"],
+            )
+
+        with Session(alchemy_engine) as s:
+            s.add(this_athlete)
+            s.commit()
+            s.add(this_activity)
+            s.commit()
+
+            splits_df.to_sql(
+                "splits", con=alchemy_engine, if_exists="append", index=False
+            )
+
         details_list.append(activity_details)
         splits_list.append(splits_df)
 
@@ -229,7 +344,12 @@ def get_event_performances(_base_segment, _event_distance, _event_name):
 
 
 if __name__ == "__main__":
-    # Base.metadata.create_all(alchemy_engine)
-    l, d, s = get_event_performances("12444719", 21.1, "Mitja Gandia")
+    Base.metadata.create_all(alchemy_engine)
+    # l, d, s = get_event_performances("12444719", 21.1, "Mitja Gandia")
+    # with Session(alchemy_engine) as session:
+    #     zz = Athlete(id="abcdef", name="test user")
+    #     session.add(zz)
+    #     session.commit()
+
     # print(d)
     # print(s)

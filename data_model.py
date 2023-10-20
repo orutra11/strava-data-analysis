@@ -1,10 +1,11 @@
-from sqlalchemy import INTEGER, DATE, REAL, BOOLEAN
+from sqlalchemy import INTEGER, DATE, REAL, BOOLEAN, UUID
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import mapped_column
 
 import datetime
+import uuid
 
 
 class Base(DeclarativeBase):
@@ -13,6 +14,7 @@ class Base(DeclarativeBase):
         float: REAL,
         bool: BOOLEAN,
         datetime.date: DATE,
+        uuid.UUID: UUID,
     }
 
 
@@ -43,7 +45,7 @@ class Activity(Base):
 class Split(Base):
     __tablename__ = "splits"
 
-    id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     activity_id: Mapped[str] = mapped_column(ForeignKey("activities.id"))
     index: Mapped[int]
     pace_str: Mapped[str]
