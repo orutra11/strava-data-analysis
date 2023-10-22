@@ -52,3 +52,4 @@ class Split(Base):
     pace_seconds: Mapped[int]
     pace_units: Mapped[str]
     elevation: Mapped[int]
+    elevation_units: Mapped[str]
